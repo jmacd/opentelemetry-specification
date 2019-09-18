@@ -65,8 +65,11 @@ default and monotonic as an option, like ordinary gauges.
 Measures support `Record(value)`, signifying in the code and to the
 SDK that events report individual measurements.  Measures are defined
 as `NonNegative` by default, meaning that negative values are invalid.
-Non-negative measures are typically used to record timing information
-such as a duration, usually defined as non-negative.
+Non-negative measures are typically used to record absolute values
+such as durations and sizes.
+
+As an option, measures can be declared as `Signed` to indicate support
+for positive and negative values.  TODO: term for `Signed` ok?
 
 ### Discussion
 
@@ -76,14 +79,14 @@ Value types: Histogram, Summary metrics. XXX
 
 ### Structure
 
-
 Metric instruments are named.  Regardless of the instrument kind,
 metric events include the instrument name, a numerical value, and an
 optional set of labels.  Labels are key:value pairs associated with
 events describing various dimensions or categories that describe the
 event.  The Metrics API supports applying explicit labels through the
-API, labels can also be applied to metric events implicitly through
-context and resources in OpenTelemetry.
+API itself, while labels can also be applied to metric events
+implicitly, through context and resources, as a benefit of
+OpenTelemetry.
 
 ### Handles
 
@@ -118,18 +121,24 @@ taken from other context.
 
 ### Input methods
 
-The API surface supports three ways to produce metrics events:
+The API surface supports three ways to produce metrics events, after
+obtaining a re-usable `LabelSet` via `Meter.DefineLabels(labels)`:
 
-1. Through an Instrument Handles.  Use
-`Instrument.GetHandle(LabelSet)` API constructs a new handle, which
+1. Through the Instrument directly.  Use `Counter.Add(LabelSet,
+value)`, `Gauge.Set(LabelSet, value)`, or `Measure.Record(LabelSet,
+value)` to produce an event (with no Handle).
+
+2. Through an instrument Handle.  Use the
+`Instrument.GetHandle(LabelSet)` API to construct a new handle that
 implements the respective `Add(value)`, `Set(value)`, or
 `Record(value)` method.
-
-2. Through the Instrument directly.  Use `Counter.Add(LabelSet,
-value)`, `Gauge.Set(LabelSet, value)`, or `Measure.Record(LabelSet,
-value)` to produce an event without a handle.
 
 3. Through a `Meter.RecordBatch` call.  Use the batch API to enter
 simultaneous measurements, where a measurement is a tuple consisting
 of the `Instrument`, a `LabelSet` and the value for the appropriate
 `Add()`, `Set()`, or `Record()` method.
+
+For instrument `Monotonic` (Counter: default), `Monotonic` (Gauge:
+option), and `NonNegative` options (Measure: default), certain inputs
+are invalid.  These invalid inputs must not panic or throw unhandled
+exceptions, however the SDK chooses to handle them.
