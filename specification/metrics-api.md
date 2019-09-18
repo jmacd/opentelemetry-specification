@@ -1,211 +1,135 @@
 # Metrics API
 
-<details>
-<summary>
-Table of Content
-</summary>
+## Overview
 
-- [Meter](#meater)
-  - [Meter Creation](#meter-creation)
-  - [Create Metric](#create-metric)
-  - [Create Measure](#create-measure)
-  - [Record](#record)
-- [Measure](#measure)
-  - [CreateDoubleMeasurement](#createdoublemeasurement)
-  - [CreateLongMeasurement](#createlongmeasurement)
-- [Measurement](#measurement)
-- [Metric](#metric)
-  - [GetOrCreateTimeSeries](#getorcreatetimeseries)
-  - [GetDefaultTimeSeries](#getdefaulttimeseries)
-  - [SetCallback](#setcallback)
-  - [RemoveTimeSeries](#removetimeseries)
-  - [Clear](#clear)
-  - [Type: Counter](#type--counter)
-  - [Type: Gauge](#type--gauge)
+The _Metrics API_ supports reporting diagnostic measurements using
+three basic kinds of instrument, commonly known as Counters, Gauges,
+and Measures.  Instruments are code-level objects, handled by
+programmers, used to gain visibility into operational metrics about
+the application, its components, and the system as a whole.
 
-</details>
+Monitoring and alerting are the common use-case for the data provided
+through metric instruments, after various collection and aggregation
+strategies are applied to the data.  We find there are many other uses
+for the _metric events_ that stream into these instruments.  We
+imagine metric data being aggregated and recorded as events in tracing
+and logging systems too, and for this reason OpenTelemetry requires a
+separation of the API from the SDK.
 
-Metrics API allows to report raw measurements as well as metrics with the known
-aggregation and labels.
+### Meter
 
-Main class that is used to work with Metrics API is called `Meter`. It is used
-to construct [`Measure`s](../terminology.md#measure) to record raw measurements
-and `Metric`s to record metrics with [predefined
-aggregation](../terminology.md#recording-metrics-with-predefined-aggregation).
+The OpenTelemetry API that provides the metrics SDK is named `Meter`,
+and whereas the `Meter` ultimately determines the treatment of metric
+events at runtime, this specification can only define their semantics
+and standard interpretation.  The three semantic kinds of instrument
+are distinguished primarily by the verb they support, which implies
+their meaning.  
 
-## Meter
+### Counter
 
-### Meter creation
+Counters support `Add(value)`, signifying in the code and to the SDK
+that a sum or a rate is of primary interest.  Counters are defined as
+monotonic by default, meaning that negative values are invalid.
+Monotonic counters are typically used because they can automatically
+be interpreted as a rate.
 
-TODO: follow the spec for the Tracer. See work in progress:
-https://github.com/open-telemetry/opentelemetry-specification/issues/39
+As an option, counters can be declared as `NonMonotonic`, in which
+case they support positive and negative increments.  Non-monotonic
+counters are useful to report changes in an accounting scheme, such as
+a number of bytes allocated.
 
-### Create Metric
+### Gauge
 
-`Meter` MUST expose the APIs to create a `Metric` of every supported type.
-Depending on the language - builder pattern (C#, Java) or options (Go) SHOULD be
-used.
+Gauges support `Set(value)`, signifying in the code and to the SDK
+that events modify a current value.  Gauges are defined as
+non-monotonic by default, meaning that any value (positive or
+negative) is allowed.
 
-`Metric` creation API requires the following argument.
+As an option, gauges can be declared as `Monotonic`, in which case
+successive values must rise monotonically.  Monotonic gauges are
+useful in reporting computed sums, allowing an application to compute
+a current value and report it, without remembering the last-reported
+value. 
 
-Required arguments:
+A special case of gauge is supported, called an `Observer` metric
+instrument, which is semantically equivalent to a gauge but uses a
+callback to report the current value.  Observer instruments are
+defined by a callback, instead of supporting `Set()`, but the
+semantics are the same.  The only difference between `Observer` and
+ordinary gauges is that their events do not have an associated
+OpenTelemetry context.  Observer instruments are non-monotonic by
+default and monotonic as an option, like ordinary gauges.
 
-- name of the `Metric`.
-- type of the `Metric`. This argument may be implicit from the API method name
-  on `Meter` was called to create this `Metric`.
+### Measure
 
-Optional arguments:
+Measures support `Record(value)`, signifying in the code and to the
+SDK that events report individual measurements.  Measures are defined
+as `NonNegative` by default, meaning that negative values are invalid.
+Non-negative measures are typically used to record timing information
+such as a duration, usually defined as non-negative.
 
-- description of the `Metric`.
-- unit of the `Metric` values.
-- list of keys for the labels with dynamic values. Order of the list is
-  important as the same order MUST be used on recording when supplying values
-  for these labels.
-- set of name/value pairs for the labels with the constant values.
-- component name that reports this `Metric`. See [semantic
-  convention](../semantic-conventions.md) for the examples of well-known
-  components.
-- resource this `Metric` is associated with.
+### Discussion
 
-### Create Measure
+Value types: Histogram, Summary metrics. XXX
 
-`Meter` MUST expose the API to create a `Measure` that will be used for
-recording raw `Measurements`.
+## Detailed Description
 
-Depending on the language - builder pattern (C#, Java) or options (Go) SHOULD be
-used. When multiple `Measure`s with the same arguments were created,
-implementation may decide to return the same or distinct object. Users of API
-MUST NOT set any expectations about `Measure`s being unique objects.
+### Structure
 
-`Measure` creation exposes the following arguments.
 
-Required arguments:
+Metric instruments are named.  Regardless of the instrument kind,
+metric events include the instrument name, a numerical value, and an
+optional set of labels.  Labels are key:value pairs associated with
+events describing various dimensions or categories that describe the
+event.  The Metrics API supports applying explicit labels through the
+API, labels can also be applied to metric events implicitly through
+context and resources in OpenTelemetry.
 
-- name of the `Measure`.
+### Handles
 
-Optional arguments:
+Metric instruments support a _Handle_ interface.  Metric handles are a
+pair consisting of an instrument and a specific set of pre-defined
+labels, allowing for efficient repeated measurements.  The use of
+pre-defined labels is so important for performance that we make it a
+first-class concept in the API.  A `LabelSet` is an API object,
+returned by the SDK through `Meter.DefineLabels`, that represents a
+set of recorded labels.  Applications cannot read the labels belonging
+to a `LabelSet` object, they are simply a reference to a specific
+`Meter.DefineLabels` event.
 
-- description of the `Measure`.
-- unit of the `Measure` values.
-- type of the `Measure`. Can be one of two values - `long` and `double`. Default
-  type is `double`.
+### Export pipeline
 
-### Record
+A metrics export pipeline consists of an SDK-provided `Meter`
+implementation that processes metrics events (somehow), paired with a
+metrics data exporter that sends the data (somehow).
 
-`Meter` provides an API to record `Measurement`s. API built with the idea that
-`Measurements`s aggregation will happen asynchronously. Typical library records
-multiple `Measurement`s at once. Thus API accepts the collection of
-`Measurement` so library can batch all the `Measurement`s that needs to be
-recorded.  
+### Required label keys
 
-Required argument:
+Metric instruments list an optional set of _required label keys_ to
+support potential optimizations in the metric export pipeline.  There
+is an important relationship between metric Instruments, their
+required label keys, and LabelSets.  To support efficient
+pre-aggregation in the metrics export pipeline, we must be able to
+infer the value of the required label keys from the `LabelSet`, which
+implies that they are not dependent on dynamic context. All this means
+that the value of a required label key is explicitly unspecified
+unless it is provided in the `LabelSet`, by definition, and not to be
+taken from other context.
 
-- Set of `Measurement` to record.
+### Input methods
 
-Optional parameters:
+The API surface supports three ways to produce metrics events:
 
-- Explicit `DistributedContext` to use instead of the current context. Context
-  is used to add dimensions for the resulting `Metric` calculated out of
-  `Measurements`.
-- Exemplar of the measurement in a form of `SpanContext`. This exemplar may be
-  used to provide an example of Spans in specific buckets when histogram
-  aggregation is used.
+1. Through an Instrument Handles.  Use
+`Instrument.GetHandle(LabelSet)` API constructs a new handle, which
+implements the respective `Add(value)`, `Set(value)`, or
+`Record(value)` method.
 
-## Measure
+2. Through the Instrument directly.  Use `Counter.Add(LabelSet,
+value)`, `Gauge.Set(LabelSet, value)`, or `Measure.Record(LabelSet,
+value)` to produce an event without a handle.
 
-`Measure` is a contract between the library exposing the raw measurement and SDK
-aggregating these values into the `Metric`. `Measure` is constructed from the
-`Meter` class, see [Create Measure](#create-measure) section, by providing set
-of `Measure` identifiers.
-
-### CreateDoubleMeasurement
-
-Creates a `Measurement` with the value passes as an argument. It MUST only be
-called on `Measure` of a type `double`. Implementation may return no-op
-`Measurement` when there are no subscribers on this `Measure`. So `Measurement`
-cannot be reused and MUST be re-created.
-
-Arguments:
-
-Double value representing the `Measurement`.
-
-### CreateLongMeasurement
-
-Creates a `Measurement` with the value passes as an argument. It MUST only be
-called on `Measure` of a type `long`. Implementation may return no-op
-`Measurement` when there are no subscribers on this `Measure`. So `Measurement`
-cannot be reused and MUST be re-created.
-
-Arguments:
-
-Long value representing the `Measurement`.
-
-## Measurement
-
-`Measurement` is an empty interface that represents a single value recorded for
-the `Measure`. `Measurement` MUST be treated as immutable short lived object.
-Instrumentation logic MUST NOT hold on to the object and MUST only record it
-once.
-
-## Metric
-
-`Metric` is a base class for various types of metrics. `Metric` is specialized
-with the type of a time series that `Metric` holds. `Metric` is constructed from
-the `Meter` class, see [Create Metric](#create-metric) section, by providing set
-of `Metric` identifiers like name and set of label keys.
-
-### GetOrCreateTimeSeries
-
-Creates a `TimeSeries` and returns a `TimeSeries` if the specified label values
-is not already associated with this gauge, else returns an existing
-`TimeSeries`.
-
-It is recommended to keep a reference to the `TimeSeries` instead of always
-calling this method for every operations.
-
-Arguments:
-
-- List of label values. The order and number of labels MUST match the order and
-  number of label keys used when `Metric` was created.
-
-### GetDefaultTimeSeries
-
-Returns a `TimeSeries` for a metric with all labels not set (default label
-value).
-
-Method takes no arguments.
-
-### SetCallback
-
-Sets a callback that gets executed every time before exporting this metric. It
-MUST be used to provide polling of a `Metric`. Callback implementation MUST set
-the value of a `Metric` to the value that will be exported.
-
-### RemoveTimeSeries
-
-Removes the `TimeSeries` from the `Metric`, if it is present.
-
-### Clear
-
-Removes all `TimeSeries` from the `Metric`.
-
-### Type: Counter
-
-`Counter` metric aggregates instantaneous values. Cumulative values can go up or
-stay the same, but can never go down. Cumulative values cannot be negative.
-`TimeSeries` for the `Counter` has two methods - `add` and `set`.
-
-- `add` adds the given value to the current value. The values cannot be
-  negative.
-- `set` sets the given value. The value must be larger than the current recorded
-  value. In general should be used in combination with `SetCallback` where the
-  recorded value is guaranteed to be monotonically increasing.
-
-### Type: Gauge
-
-`Gauge` metric aggregates instantaneous values. Cummulative value can go both up
-and down. `Gauge` values can be negative. `TimeSeries` for the `Gauge` has two
-methods - `add` and `set`.
-
-- `add` adds the given value to the current value. The values can be negative.
-- `set` sets the given value.
+3. Through a `Meter.RecordBatch` call.  Use the batch API to enter
+simultaneous measurements, where a measurement is a tuple consisting
+of the `Instrument`, a `LabelSet` and the value for the appropriate
+`Add()`, `Set()`, or `Record()` method.
