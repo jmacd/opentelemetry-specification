@@ -67,13 +67,31 @@ provided to record positive or negative values, but it does not change
 the kind of instrument or the method name used, as the semantics are
 unchanged.
 
+### Metric selection
+
+To guide the user in selecting the right kind of metric for an
+application, we'll consider the following questions about the primary
+intent of reporting given data. We use "of primary interest" here to
+mean information that is almost certainly useful in understanding
+system behavior. Consider these questions:
+
+- Does the measurement represent a quantity of something? Is it also non-negative?
+- Is the sum a matter of primary interest?
+- Is the event count a matter of primary interest?
+- Is the distribution (p50, p99, etc.) a matter of primary interest?
+
+With answers to these questions, a user should be able to select the
+kind of metric instrument based on its primary purpose.
+
 ### Counter
 
-Counters support `Add(value)`, signifying that a sum or a rate is of
-primary interest.  Counters are defined as monotonic by default,
-meaning that positive values are expected.  Monotonic counters are
-typically used because they can automatically be interpreted as a
-rate.
+Counters support `Add(value)`.  Choose this kind of metric when the
+value is a quantity, the sum is of primary interest, and the event
+count and value distribution are not of primary interest.
+
+Counters are defined as monotonic by default, meaning that positive
+values are expected.  Monotonic counters are typically used because
+they can automatically be interpreted as a rate.
 
 As an option, counters can be declared as `NonMonotonic`, in which
 case they support positive and negative increments.  Non-monotonic
@@ -82,15 +100,22 @@ the number of bytes allocated and deallocated.
 
 ### Gauge
 
-Gauges support `Set(value)`, signifying that events report a current
-value.  Gauges are defined as non-monotonic by default, meaning that
-any value (positive or negative) is allowed.
+Gauges support `Set(value)`.  Gauge metrics express a pre-calculated
+value that is either Set() by explicit instrumentation or observed
+through a callback.  Generally, this kind of metric should be used
+when the metric cannot be expressed as a sum or because the
+measurement interval is arbitrary. Use this kind of metric when the
+measurement is not a quantity, and the sum and event count are not of
+interest.
+
+Gauges are defined as non-monotonic by default, meaning that any value
+(positive or negative) is allowed.
 
 As an option, gauges can be declared as `Monotonic`, in which case
 successive values are expected to rise monotonically.  Monotonic
-gauges are useful in reporting computed sums, allowing an application
-to compute a current value and report it, without remembering the
-last-reported value.
+gauges are useful in reporting computed cumulative sums, allowing an
+application to compute a current value and report it, without
+remembering the last-reported value in order to report an increment.
 
 A special case of gauge is supported, called an `Observer` metric
 instrument, which is semantically equivalent to a gauge but uses a
@@ -104,10 +129,15 @@ default and monotonic as an option, like ordinary gauges.
 ### Measure
 
 Measures support `Record(value)`, signifying that events report
-individual measurements.  Measures are defined as `NonNegative` by
-default, meaning that negative values are invalid.  Non-negative
-measures are typically used to record absolute values such as
-durations and sizes.
+individual measurements.  This kind of metric should be used when the
+count or rate of events is meaningful and either:
+
+- The sum is of interest in addition to the count (rate)
+- Quantile information is of interest.
+
+Measures are defined as `NonNegative` by default, meaning that
+negative values are invalid.  Non-negative measures are typically used
+to record absolute values such as durations and sizes.
 
 As an option, measures can be declared as `Signed` to indicate support
 for positive and negative values.
