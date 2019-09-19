@@ -154,6 +154,14 @@ event.  The Metrics API supports applying explicit labels through the
 API itself, while labels can also be applied to metric events
 implicitly, through the current OpenTelemetry context and resources.
 
+A metric `Descriptor` is a structural description of the instrument
+itself, including its name and various options.  Instruments may be
+annotated with with specific `Units` and a description, for the
+purpose of self-documentation.  Instruments support an option to be
+disabled by default, which implies to the SDK that a particular metric
+should be explicitly enabled, otherwise these instruments are turned
+"off" by the default configuration).
+
 ### Handles and LabelSets
 
 Metric instruments support a _Handle_ interface.  Metric handles are a
