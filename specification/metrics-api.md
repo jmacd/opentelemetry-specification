@@ -1,4 +1,4 @@
-API # Metrics
+# Metrics API
 
 ## Overview
 
@@ -27,61 +27,64 @@ goals and the export capabilities it supports are not specified.
 
 The standard interpretation for `Meter` implementations to follow is
 specified so that users understand the intended use for each kind of
-metric.  For example, a monotonic `Counter` instrument supports
+metric.  For example, a monotonic Counter instrument supports
 `Add()` events, so the standard interpretation is to compute a sum;
 the sum may be exported as an absolute value or as the change in
-value, but either way the purpose of using a `Counter` with `Add()` is
+value, but either way the purpose of using a Counter with `Add()` is
 to monitor a sum.
 
-## Metric kinds and optional behavior
+## Metric kinds and inputs
 
-The API distinguishes metric instruments their semantic meaning, not
-by the type of value produced in an exporter.  This is a departure
-from convention, compared with a number of common metric libraries,
-and stems from the separation of the API and the SDK.  The SDK
-ultimately determines how to handle metric events and could
-potentially implement non-standard behavior.  
+The API distinguishes metric instruments by semantic meaning, not by
+the type of value produced in an exporter.  This is a departure from
+convention, compared with a number of common metric libraries, and
+stems from the separation of the API and the SDK.  The SDK ultimately
+determines how to handle metric events and could potentially implement
+non-standard behavior.
 
 This explains why the metric API does not have metric instrument kinds
-for exporting "Histogram" and "Summary" distribution explicitly.
-These are both semantically `Measure` and an SDK can be configured to
-produce either.  It is out of scope for the Metrics API to specify how
-these alternates are configured in a particular SDK.
+for exporting "Histogram" and "Summary" distribution explicitly, for
+example.  These are both semantically `Measure` instruments and an SDK
+can be configured to produce histograms or distribution summaries from
+Measure events.  It is out of scope for the Metrics API to specify how
+these alternatives are configured in a particular SDK.
 
 We believe the three metric kinds Counter, Gauge, and Measure form a
 sufficient basis for expression of a wide variety of metric data.
-Programmers read these as `Add()`, `Set()`, and `Record()` method
-calls, signifying their semantics and standard interpretation, and we
-believe these three methods are all that are necessary.
+Programmers write and read these as `Add()`, `Set()`, and `Record()`
+method calls, signifying the semantics and standard interpretation,
+and we believe these three methods are all that are needed.
 
 Nevertheless, it is common to apply restrictions on metric values, the
 inputs to `Add()`, `Set()`, and `Record()`, in order to refine their
 standard interpretation.  Generally, there is a question of whether
 the instrument can be used to compute a rate, because that is usually
 a desireable analysis.  Each metric instrument offers an optional
-declaration, specifying alternate restrictions on values input to the
-metric.  For example, Counters are monotonic by default, to support
-rate calculations.
+declaration, specifying restrictions on values input to the metric.
+For example, Measures are declared as non-negative by default,
+appropriate for reporting sizes and durations; a Measure option is
+provided to record positive or negative values, but it does not change
+the kind of instrument or the method name used, as the semantics are
+unchanged.
 
 ### Counter
 
-Counters support `Add(value)`, signifying in the code and to the SDK
-that a sum or a rate is of primary interest.  Counters are defined as
-monotonic by default, meaning that positive values are expected.
-Monotonic counters are typically used because they can automatically
-be interpreted as a rate.
+Counters support `Add(value)`, signifying that a sum or a rate is of
+primary interest.  Counters are defined as monotonic by default,
+meaning that positive values are expected.  Monotonic counters are
+typically used because they can automatically be interpreted as a
+rate.
 
 As an option, counters can be declared as `NonMonotonic`, in which
 case they support positive and negative increments.  Non-monotonic
 counters are useful to report changes in an accounting scheme, such as
-a number of bytes allocated.
+the number of bytes allocated and deallocated.
 
 ### Gauge
 
-Gauges support `Set(value)`, signifying in the code and to the SDK
-that events modify a current value.  Gauges are defined as
-non-monotonic by default, meaning that any value (positive or
-negative) is allowed.
+Gauges support `Set(value)`, signifying that events report a current
+value.  Gauges are defined as non-monotonic by default, meaning that
+any value (positive or negative) is allowed.
 
 As an option, gauges can be declared as `Monotonic`, in which case
 successive values are expected to rise monotonically.  Monotonic
@@ -100,14 +103,14 @@ default and monotonic as an option, like ordinary gauges.
 
 ### Measure
 
-Measures support `Record(value)`, signifying in the code and to the
-SDK that events report individual measurements.  Measures are defined
-as `NonNegative` by default, meaning that negative values are invalid.
-Non-negative measures are typically used to record absolute values
-such as durations and sizes.
+Measures support `Record(value)`, signifying that events report
+individual measurements.  Measures are defined as `NonNegative` by
+default, meaning that negative values are invalid.  Non-negative
+measures are typically used to record absolute values such as
+durations and sizes.
 
 As an option, measures can be declared as `Signed` to indicate support
-for positive and negative values.  TODO: term for `Signed` ok?
+for positive and negative values.
 
 ## Detailed Description
 
@@ -116,23 +119,33 @@ for positive and negative values.  TODO: term for `Signed` ok?
 Metric instruments are named.  Regardless of the instrument kind,
 metric events include the instrument name, a numerical value, and an
 optional set of labels.  Labels are key:value pairs associated with
-events describing various dimensions or categories that describe the
+events describing various dimensions or categories that describe thee
 event.  The Metrics API supports applying explicit labels through the
 API itself, while labels can also be applied to metric events
-implicitly, through context and resources, as a benefit of
-OpenTelemetry.
+implicitly, through the current OpenTelemetry context and resources.
 
-### Handles
+### Handles and LabelSets
 
 Metric instruments support a _Handle_ interface.  Metric handles are a
 pair consisting of an instrument and a specific set of pre-defined
 labels, allowing for efficient repeated measurements.  The use of
 pre-defined labels is so important for performance that we make it a
-first-class concept in the API.  A `LabelSet` is an API object,
-returned by the SDK through `Meter.DefineLabels`, that represents a
-set of recorded labels.  Applications cannot read the labels belonging
-to a `LabelSet` object, they are simply a reference to a specific
-`Meter.DefineLabels` event.
+first-class concept in the API.
+
+A `LabelSet` is an API object, returned by the SDK through
+`Meter.DefineLabels(labels)`, that represents a set of "witnessed"
+labels.  Applications cannot read the labels belonging to a `LabelSet`
+object, they are simply a reference to a specific
+`Meter.DefineLabels()` event.
+
+Handles and LabelSets support different ways to achieve the same kind
+of optimization.  Generally, there is a high cost associated with
+computing a canonicalized form of the label set that can be used as a
+map key, in order to look up a corresponding group entry for
+aggregation.  Handles offer the most optimization potential, but
+require the programmer to allocate and store one handle per metric.
+LabelSets offer most of the optimization potential without managing
+one handle per metric.
 
 ### Export pipeline
 
