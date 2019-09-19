@@ -1,4 +1,4 @@
-# Metrics API
+API # Metrics
 
 ## Overview
 
@@ -18,18 +18,56 @@ separation of the API from the SDK.
 
 ### Meter
 
-The OpenTelemetry API that provides the metrics SDK is named `Meter`,
-and whereas the `Meter` ultimately determines the treatment of metric
-events at runtime, this specification can only define their semantics
-and standard interpretation.  The three semantic kinds of instrument
-are distinguished primarily by the verb they support, which implies
-their meaning.  
+The OpenTelemetry API that provides the metrics SDK is named `Meter`.
+According to the specification, the `Meter` implementation ultimately
+determines how metrics events are handled.  The specification's task
+is to define the semantics of the event and describe standard
+interpretation in high-level terms.  How the `Meter` accomplishes its
+goals and the export capabilities it supports are not specified.
+
+The standard interpretation for `Meter` implementations to follow is
+specified so that users understand the intended use for each kind of
+metric.  For example, a monotonic `Counter` instrument supports
+`Add()` events, so the standard interpretation is to compute a sum;
+the sum may be exported as an absolute value or as the change in
+value, but either way the purpose of using a `Counter` with `Add()` is
+to monitor a sum.
+
+## Metric kinds and optional behavior
+
+The API distinguishes metric instruments their semantic meaning, not
+by the type of value produced in an exporter.  This is a departure
+from convention, compared with a number of common metric libraries,
+and stems from the separation of the API and the SDK.  The SDK
+ultimately determines how to handle metric events and could
+potentially implement non-standard behavior.  
+
+This explains why the metric API does not have metric instrument kinds
+for exporting "Histogram" and "Summary" distribution explicitly.
+These are both semantically `Measure` and an SDK can be configured to
+produce either.  It is out of scope for the Metrics API to specify how
+these alternates are configured in a particular SDK.
+
+We believe the three metric kinds Counter, Gauge, and Measure form a
+sufficient basis for expression of a wide variety of metric data.
+Programmers read these as `Add()`, `Set()`, and `Record()` method
+calls, signifying their semantics and standard interpretation, and we
+believe these three methods are all that are necessary.
+
+Nevertheless, it is common to apply restrictions on metric values, the
+inputs to `Add()`, `Set()`, and `Record()`, in order to refine their
+standard interpretation.  Generally, there is a question of whether
+the instrument can be used to compute a rate, because that is usually
+a desireable analysis.  Each metric instrument offers an optional
+declaration, specifying alternate restrictions on values input to the
+metric.  For example, Counters are monotonic by default, to support
+rate calculations.
 
 ### Counter
 
 Counters support `Add(value)`, signifying in the code and to the SDK
 that a sum or a rate is of primary interest.  Counters are defined as
-monotonic by default, meaning that negative values are invalid.
+monotonic by default, meaning that positive values are expected.
 Monotonic counters are typically used because they can automatically
 be interpreted as a rate.
 
@@ -46,10 +84,10 @@ non-monotonic by default, meaning that any value (positive or
 negative) is allowed.
 
 As an option, gauges can be declared as `Monotonic`, in which case
-successive values must rise monotonically.  Monotonic gauges are
-useful in reporting computed sums, allowing an application to compute
-a current value and report it, without remembering the last-reported
-value. 
+successive values are expected to rise monotonically.  Monotonic
+gauges are useful in reporting computed sums, allowing an application
+to compute a current value and report it, without remembering the
+last-reported value.
 
 A special case of gauge is supported, called an `Observer` metric
 instrument, which is semantically equivalent to a gauge but uses a
@@ -70,10 +108,6 @@ such as durations and sizes.
 
 As an option, measures can be declared as `Signed` to indicate support
 for positive and negative values.  TODO: term for `Signed` ok?
-
-### Discussion
-
-Value types: Histogram, Summary metrics. XXX
 
 ## Detailed Description
 
