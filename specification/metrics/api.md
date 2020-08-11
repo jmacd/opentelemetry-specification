@@ -1,5 +1,7 @@
 # Metrics API
 
+TODO fix "global `Meter`" phrasing.
+
 <!-- toc -->
 
 - [Overview](#overview)
@@ -990,7 +992,7 @@ func (s *server) registerObservers(.Context) {
                  )
              }
           }),
-          metric.WithDescription("The load factor use for load balancing purposes"),
+          metric.WithDescription("The load factor used for load balancing purposes"),
     )
 }
 
@@ -1008,6 +1010,7 @@ asynchronous instrument.
 ```golang
 func (s *server) registerObservers(.Context) {
      batch := s.meter.NewBatchObserver(func (result BatchObserverResult) {
+          value1, value2, value3 := expensiveComputation()
           result.Observe(
              []kv.KeyValue{
                  kv.String("name", server.name),
