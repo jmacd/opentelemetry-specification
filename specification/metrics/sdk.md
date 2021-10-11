@@ -2,34 +2,25 @@
 
 **Status**: [Experimental](../document-status.md)
 
-**Owner:**
-
-* [Reiley Yang](https://github.com/reyang)
-
-**Domain Experts:**
-
-* [Bogdan Drutu](https://github.com/bogdandrutu)
-* [Josh Suereth](https://github.com/jsuereth)
-* [Joshua MacDonald](https://github.com/jmacd)
-
-Note: this specification is subject to major changes. To avoid thrusting
-language client maintainers, we don't recommend OpenTelemetry clients to start
-the implementation unless explicitly communicated via
-[OTEP](https://github.com/open-telemetry/oteps#opentelemetry-enhancement-proposal-otep).
-
 <details>
 <summary>
 Table of Contents
 </summary>
 
 * [MeterProvider](#meterprovider)
-* [Attribute Limits](#attribute-limits)
-* [MeasurementProcessor](#measurementprocessor)
+* [Attribute limits](#attribute-limits)
+* [Exemplar](#exemplar)
+  * [ExemplarFilter](#exemplarfilter)
+  * [ExemplarReservoir](#exemplarreservoir)
+  * [Exemplar defaults](#exemplar-defaults)
 * [MetricReader](#metricreader)
   * [Periodic exporting MetricReader](#periodic-exporting-metricreader)
 * [MetricExporter](#metricexporter)
   * [Push Metric Exporter](#push-metric-exporter)
   * [Pull Metric Exporter](#pull-metric-exporter)
+* [Defaults and configuration](#defaults-and-configuration)
+* [Compatibility requirements](#compatibility-requirements)
+* [Concurrency requirements](#concurrency-requirements)
 
 </details>
 
@@ -50,14 +41,14 @@ to create an
 [`InstrumentationLibrary`](https://github.com/open-telemetry/oteps/blob/main/text/0083-component.md)
 instance which is stored on the created `Meter`.
 
-Configuration (i.e., [MeasurementProcessors](#measurementprocessor),
-[MetricExporters](#metricexporter), [MetricReaders](#metricreader) and
-[Views](#view)) MUST be managed solely by the `MeterProvider` and the SDK MUST
-provide a way to configure all options that are implemented by the SDK. This MAY
-be done at the time of MeterProvider creation if appropriate.
+Configuration (i.e., [MetricExporters](#metricexporter),
+[MetricReaders](#metricreader) and [Views](#view)) MUST be managed solely by the
+`MeterProvider` and the SDK MUST provide a way to configure all options that are
+implemented by the SDK. This MAY be done at the time of MeterProvider creation
+if appropriate.
 
 The `MeterProvider` MAY provide methods to update the configuration. If
-configuration is updated (e.g., adding a `MeasurementProcessor`), the updated
+configuration is updated (e.g., adding a `MetricReader`), the updated
 configuration MUST also apply to all already returned `Meters` (i.e. it MUST NOT
 matter whether a `Meter` was obtained from the `MeterProvider` before or after
 the configuration change). Note: Implementation-wise, this could mean that
@@ -66,11 +57,47 @@ configuration only via this reference.
 
 ### Shutdown
 
-TODO
+This method provides a way for provider to do any cleanup required.
+
+`Shutdown` MUST be called only once for each `MeterProvider` instance. After the
+call to `Shutdown`, subsequent attempts to get a `Meter` are not allowed. SDKs
+SHOULD return a valid no-op Meter for these calls, if possible.
+
+`Shutdown` SHOULD provide a way to let the caller know whether it succeeded,
+failed or timed out.
+
+`Shutdown` SHOULD complete or abort within some timeout. `Shutdown` CAN be
+implemented as a blocking API or an asynchronous API which notifies the caller
+via a callback or an event. [OpenTelemetry SDK](../overview.md#sdk) authors CAN
+decide if they want to make the shutdown timeout configurable.
+
+`Shutdown` MUST be implemented at least by invoking `Shutdown` on all registered
+[MetricReader](#metricreader) and [MetricExporter](#metricexporter) instances.
 
 ### ForceFlush
 
-TODO
+This method provides a way for provider to notify the registered
+[MetricReader](#metricreader) and [MetricExporter](#metricexporter) instances,
+so they can do as much as they could to consume or send the metrics. Note:
+unlike [Push Metric Exporter](#push-metric-exporter) which can send data on its
+own schedule, [Pull Metric Exporter](#pull-metric-exporter) can only send the
+data when it is being asked by the scraper, so `ForceFlush` would not make much
+sense.
+
+`ForceFlush` SHOULD provide a way to let the caller know whether it succeeded,
+failed or timed out. `ForceFlush` SHOULD return some **ERROR** status if there
+is an error condition; and if there is no error condition, it should return some
+**NO ERROR** status, language implementations MAY decide how to model **ERROR**
+and **NO ERROR**.
+
+`ForceFlush` SHOULD complete or abort within some timeout. `ForceFlush` CAN be
+implemented as a blocking API or an asynchronous API which notifies the caller
+via a callback or an event. [OpenTelemetry SDK](../overview.md#sdk) authors CAN
+decide if they want to make the flush timeout configurable.
+
+`ForceFlush` MUST invoke `ForceFlush` on all registered
+[MetricReader](#metricreader) and [Push Metric Exporter](#push-metric-exporter)
+instances.
 
 ### View
 
@@ -108,10 +135,10 @@ are the inputs:
   * The `name` of the Meter (optional).
   * The `version` of the Meter (optional).
   * The `schema_url` of the Meter (optional).
-  * Individual language client MAY choose to support more criteria. For example,
-    a strong typed language MAY support point type (e.g. allow the users to
-    select Instruments based on whether the underlying type is integer or
-    double).
+  * [OpenTelemetry SDK](../overview.md#sdk) authors MAY choose to support more
+    criteria. For example, a strong typed language MAY support point type (e.g.
+    allow the users to select Instruments based on whether the underlying type
+    is integer or double).
   * The criteria SHOULD be treated as additive, which means the Instrument has
     to meet _all_ the provided criteria. For example, if the criteria are
     _instrument name == "Foobar"_ and _instrument type is Histogram_, it will be
@@ -368,63 +395,27 @@ This Aggregation informs the SDK to collect:
 - Count of `Measurement` values falling within explicit bucket boundaries.
 - Arithmetic sum of `Measurement` values in population.
 
-## Attribute Limits
+## Attribute limits
 
 Attributes which belong to Metrics are exempt from the
 [common rules of attribute limits](../common/common.md#attribute-limits) at this
 time. Attribute truncation or deletion could affect identitity of metric time
 series and it requires further analysis.
 
-## MeasurementProcessor
+## Exemplar
 
-`MeasurementProcessor` is an interface which allows hooks when a
-[Measurement](./api.md#measurement) is recorded by an
-[Instrument](./api.md#instrument).
-
-`MeasurementProcessor` MUST have access to:
-
-* The `Measurement`
-* The `Instrument`, which is used to report the `Measurement`
-* The `Resource`, which is associated with the `MeterProvider`
-
-In addition to things listed above, if the `Measurement` is reported by a
-synchronous `Instrument` (e.g. [Counter](./api.md#counter)),
-`MeasurementProcessor` MUST have access to:
-
-* [Baggage](../baggage/api.md)
-* [Context](../context/context.md)
-* The [Span](../trace/api.md#span) which is associated with the `Measurement`
-
-Depending on the programming language and runtime model, these can be provided
-explicitly (e.g. as input arguments) or implicitly (e.g. [implicit
-Context](../context/context.md#optional-global-operations) and the [currently
-active span](../trace/api.md#context-interaction)).
-
-```text
-+------------------+
-| MeterProvider    |                 +----------------------+            +-----------------+
-|   Meter A        | Measurements... |                      | Metrics... |                 |
-|     Instrument X +-----------------> MeasurementProcessor +------------> In-memory state |
-|     Instrument Y |                 |                      |            |                 |
-|   Meter B        |                 +----------------------+            +-----------------+
-|     Instrument Z |
-|     ...          |                 +----------------------+            +-----------------+
-|     ...          | Measurements... |                      | Metrics... |                 |
-|     ...          +-----------------> MeasurementProcessor +------------> In-memory state |
-|     ...          |                 |                      |            |                 |
-|     ...          |                 +----------------------+            +-----------------+
-+------------------+
-```
-
-## Exemplars
-
-An [Exemplar](./datamodel.md#exemplars) is a recorded measurement that exposes
-the following pieces of information:
+An [Exemplar](./datamodel.md#exemplars) is a recorded
+[Measurement](./api.md#measurement) that exposes the following pieces of
+information:
 
 - The `value` that was recorded.
-- The `time` the measurement was seen.
-- The set of [Attributes](../common/common.md#attributes) associated with the measurement not already included in a metric data point.
-- The associated [trace id and span id](../trace/api.md#retrieving-the-traceid-and-spanid) of the active [Span within Context](../trace/api.md#determining-the-parent-span-from-a-context) of the measurement.
+- The `time` the `Measurement` was seen.
+- The set of [Attributes](../common/common.md#attributes) associated with the
+  `Measurement` not already included in a metric data point.
+- The associated [trace id and span
+  id](../trace/api.md#retrieving-the-traceid-and-spanid) of the active [Span
+  within Context](../trace/api.md#determining-the-parent-span-from-a-context) of
+  the `Measurement`.
 
 A Metric SDK MUST provide a mechanism to sample `Exemplar`s from measurements.
 
@@ -440,32 +431,36 @@ A Metric SDK SHOULD provide extensible hooks for Exemplar sampling, specifically
 - `ExemplarFilter`: filter which measurements can become exemplars
 - `ExemplarReservoir`: determine how to store exemplars.
 
-### Exemplar Filter
+### ExemplarFilter
 
 The `ExemplarFilter` interface MUST provide a method to determine if a
-measurement should be sampled.  
+measurement should be sampled.
 
 This interface SHOULD have access to:
 
-- The value of the measurement.
-- The complete set of `Attributes` of the measurment.
-- the `Context` of the measuremnt.
-- The timestamp of the measurement.
+- The `value` of the measurement.
+- The complete set of `Attributes` of the measurement.
+- The [Context](../context/context.md) of the measurement, which covers the
+  [Baggage](../baggage/api.md) and the current active
+  [Span](../trace/api.md#span).
+- A `timestamp` that best represents when the measurement was taken.
 
 See [Defaults and Configuration](#defaults-and-configuration) for built-in
 filters.
 
-### Exemplar Reservoir
+### ExemplarReservoir
 
 The `ExemplarReservoir` interface MUST provide a method to offer measurements
 to the reservoir and another to collect accumulated Exemplars.
 
 The "offer" method SHOULD accept measurements, including:
 
-- value
-- `Attributes` (complete set)
-- `Context`
-- timestamp
+- The `value` of the measurement.
+- The complete set of `Attributes` of the measurement.
+- The [Context](../context/context.md) of the measurement, which covers the
+  [Baggage](../baggage/api.md) and the current active
+  [Span](../trace/api.md#span).
+- A `timestamp` that best represents when the measurement was taken.
 
 The "offer" method SHOULD have the ability to pull associated trace and span
 information without needing to record full context.  In other words, current
@@ -484,7 +479,7 @@ from the original sample measurement.
 
 The `ExemplarReservoir` SHOULD avoid allocations when sampling exemplars.
 
-### Exemplar Defaults
+### Exemplar defaults
 
 The SDK will come with two types of built-in exemplar reservoirs:
 
@@ -561,8 +556,9 @@ to (T<sub>n+1</sub>, T<sub>n+2</sub>] - **ONLY** for this particular
 
 The SDK SHOULD provide a way to allow `MetricReader` to respond to
 [MeterProvider.ForceFlush](#forceflush) and [MeterProvider.Shutdown](#shutdown).
-Individual language clients can decide the language idiomatic approach, for
-example, as `OnForceFlush` and `OnShutdown` callback functions.
+[OpenTelemetry SDK](../overview.md#sdk) authors CAN decide the language
+idiomatic approach, for example, as `OnForceFlush` and `OnShutdown` callback
+functions.
 
 ### MetricReader operations
 
@@ -575,10 +571,26 @@ functions will be triggered.
 `Collect` SHOULD provide a way to let the caller know whether it succeeded,
 failed or timed out.
 
-`Collect` does not have any required parameters, however, individual language
-clients MAY choose to add parameters (e.g. callback, filter, timeout).
-Individual language clients MAY choose the return value type, or do not return
-anything.
+`Collect` does not have any required parameters, however, [OpenTelemetry
+SDK](../overview.md#sdk) authors MAY choose to add parameters (e.g. callback,
+filter, timeout). [OpenTelemetry SDK](../overview.md#sdk) authors MAY choose the
+return value type, or do not return anything.
+
+### Shutdown
+
+This method provides a way for the `MetricReader` to do any cleanup required.
+
+`Shutdown` MUST be called only once for each `MetricReader` instance. After the
+call to `Shutdown`, subsequent invocations to `Collect` are not allowed. SDKs
+SHOULD return some failure for these calls, if possible.
+
+`Shutdown` SHOULD provide a way to let the caller know whether it succeeded,
+failed or timed out.
+
+`Shutdown` SHOULD complete or abort within some timeout. `Shutdown` CAN be
+implemented as a blocking API or an asynchronous API which notifies the caller
+via a callback or an event. [OpenTelemetry SDK](../overview.md#sdk) authors CAN
+decide if they want to make the shutdown timeout configurable.
 
 ### Periodic exporting MetricReader
 
@@ -696,21 +708,21 @@ invocation, but before the exporter exports the completed metrics.
 
 `ForceFlush` SHOULD complete or abort within some timeout. `ForceFlush` can be
 implemented as a blocking API or an asynchronous API which notifies the caller
-via a callback or an event. OpenTelemetry client authors can decide if they want
-to make the flush timeout configurable.
+via a callback or an event. [OpenTelemetry SDK](../overview.md#sdk) authors CAN
+decide if they want to make the flush timeout configurable.
 
 ##### Shutdown()
 
 Shuts down the exporter. Called when SDK is shut down. This is an opportunity
 for exporter to do any cleanup required.
 
-Shutdown should be called only once for each `MetricExporter` instance. After
+Shutdown SHOULD be called only once for each `MetricExporter` instance. After
 the call to `Shutdown` subsequent calls to `Export` are not allowed and should
 return a Failure result.
 
-`Shutdown` should not block indefinitely (e.g. if it attempts to flush the data
-and the destination is unavailable). OpenTelemetry client authors can decide if
-they want to make the shutdown timeout configurable.
+`Shutdown` SHOULD NOT block indefinitely (e.g. if it attempts to flush the data
+and the destination is unavailable). [OpenTelemetry SDK](../overview.md#sdk)
+authors CAN decide if they want to make the shutdown timeout configurable.
 
 ### Pull Metric Exporter
 
@@ -747,7 +759,7 @@ modeled to interact with other components in the SDK:
   ```text
   +-----------------+            +-----------------------------+
   |                 | Metrics... |                             |
-  | In-memory state +------------> Base exporting MetricReader |
+  | In-memory state +------------> Exporting MetricReader      |
   |                 |            |                             |
   +-----------------+            |  +-----------------------+  |
                                  |  |                       |  |
@@ -758,17 +770,32 @@ modeled to interact with other components in the SDK:
                                  +-----------------------------+
   ```
 
-## Defaults and Configuration
+## Defaults and configuration
 
-The SDK MUST provide the following configuration parameters for Exemplar
-sampling:
+The SDK MUST provide configuration according to the [SDK environment
+variables](../sdk-environment-variables.md) specification.
 
-| Name            | Description | Default | Notes |
-|-----------------|---------|-------------|---------|
-| `OTEL_METRICS_EXEMPLAR_FILTER` | Filter for which measurements can become Exemplars. | `"WITH_SAMPLED_TRACE"` | |
+## Compatibility requirements
 
-Known values for `OTEL_METRICS_EXEMPLAR_FILTER` are:
+All the metrics components SHOULD allow new methods to be added to existing
+components without introducing breaking changes.
 
-- `"NONE"`: No measurements are eligble for exemplar sampling.
-- `"ALL"`: All measurements are eligible for exemplar sampling.
-- `"WITH_SAMPLED_TRACE"`: Only allow measurements with a sampled parent span in context.
+All the metrics SDK methods SHOULD allow optional parameter(s) to be added to
+existing methods without introducing breaking changes, if possible.
+
+## Concurrency requirements
+
+For languages which support concurrent execution the Metrics SDKs provide
+specific guarantees and safeties.
+
+**MeterProvider** - Meter creation, `ForceFlush` and `Shutdown` are safe to be
+called concurrently.
+
+**ExemplarFilter** - all methods are safe to be called concurrently.
+
+**ExemplarReservoir** - all methods are safe to be called concurrently.
+
+**MetricReader** - `Collect` and `Shutdown` are safe to be called concurrently.
+
+**MetricExporter** - `ForceFlush` and `Shutdown` are safe to be called
+concurrently.
