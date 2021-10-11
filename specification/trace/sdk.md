@@ -182,44 +182,50 @@ population.  Adjusted count is the inverse of sampling probability except
 when the probability is zero, which is an important special case.
 
 Although sampling can be carried out in multiple stages, OpenTelemetry
-specifies a dedicated field in the Span data model for representing
-probability at the "head" of the distributed trace, where it describes the
-probability the `Sampled` flag was set in the Span's initial sampling
-decision.
+specifies how to record the adjusted count associated with the initial
+Sampler decision of each Span.  Instead of a dedicated field in the
+Span data model, OpenTelemetry makes use the W3C `tracestate` header,
+specifically the entry identified `ot`, as a way to both propagate and
+record probability sampling decisions.
 
-To reduce the cost of conveying Sampling information through propagators,
-OpenTelemetry limits head sampling probabilities to powers of two or zero.
-Adjusted counts are likewise limited to powers of two or zero.  As not all
-Sampler implementations will be probabilistic in nature, a special value for
-the "unknown" adjusted count is included in the data model.  Aside from the
-zero and unknown cases, adjusted count values can be encoded using their
-base-2 logarithm in a small number of bits.
+To reduce the cost of conveying Sampling information through
+propagators, OpenTelemetry limits head sampling probabilities to
+powers of two or zero.  Adjusted counts are likewise limited to powers
+of two or zero, with a caveat that when adjusted count is unknown
+(e.g., as a result of non-probabilistic Sampler logic), the
+corresponding `tracestate` value should be omitted.  Aside from the
+zero and unknown cases, adjusted count values can be encoded using
+their base-2 logarithm in a small number of bits.
 
-The OpenTelemetry Span field for encoding adjusted count is named
-`log_head_adjusted_count`, with the default value zero representing the case
-of unknown adjusted count.  Values 1 through 62 encode one plus the base-2
-logarithm of adjusted count (i.e., adjusted count equals
-`2**(encoded_value-1)`), and zero adjusted count is encoded by value 63.
-Thus, it takes 6 bits to encode the `log_head_adjusted_count` field, with
-interpretation specified in the table below.
+This quantity, known as "p-value" and set in the W3C `tracestate`,
+describes the probability of the immediate parent in the traced
+[Context](../context/context.md).  This allows the `ParentBased`
+Sampler, simply by recording the `tracestate`, to store the effective
+adjusted count of a child Span.
 
-<a name="log-head-adjusted-count-table"></a>
+P-values are encoding using 6 bits of information to describe the
+known values of adjusted count, as follows, with interpretation
+specified in the table below.
 
-| Encoded Value | Head adjusted count | Head sampling probability |
-| ------------- | ------------------- | ------------------------- |
-| 0             | Unknown             | Unknown                   |
-| 1             | 1                   | 1                         |
-| 2             | 2                   | 1/2                       |
-| 3             | 4                   | 1/4                       |
-| 4             | 8                   | 1/8                       |
-| ...           | ...                 | ...                       |
-| N             | 2**(N-1)            | 2**(-N+1)                 |
-| ...           | ...                 | ...                       |
-| 62            | 2**61               | 2**-61                    |
-| 63            | 0                   | 0                         |
+<a name="probability-sampling-p-value"></a>
 
-The built-in Samplers are defined so that when this specification is
-followed, all spans will have known head sampling probability.
+| Encoded Value | Parent adjusted count | Parent sampling probability |
+| ------------- | -------------------   | -------------------------   |
+| 0             | 1                     | 1                           |
+| 1             | 2                     | 1/2                         |
+| 2             | 4                     | 1/4                         |
+| 3             | 8                     | 1/8                         |
+| ...           | ...                   | ...                         |
+| N             | 2**N                  | 2**-N                       |
+| ...           | ...                   | ...                         |
+| 62            | 2**62                 | 2**-62                      |
+| 63            | 0                     | 0                           |
+
+As of this writing, the built-in Samplers are not defined to implement
+probability sampling as specified 
+so that when
+this specification is followed, all spans will have known head
+sampling probability.
 
 ### SDK Span creation
 
