@@ -1,6 +1,6 @@
 # Trace Data Model
 
-**Status**: [Mixed](../document-status.md)
+**Status**: [Stable](../document-status.md)
 
 <!-- Re-generate TOC with `markdown-toc --no-first-h1 -i` -->
 
@@ -16,10 +16,10 @@
   * [Trace flags](#trace-flags)
   * [Tracestate](#tracestate)
 - [Span fields](#span-fields)
-  * [TraceID](#traceid)
-  * [SpanID](#spanid)
+  * [TraceId](#traceid)
+  * [SpanId](#spanid)
   * [TraceState](#tracestate)
-  * [ParentSpanID](#parentspanid)
+  * [ParentSpanId](#parentspanid)
   * [Name](#name)
   * [SpanKind](#spankind)
   * [StartTimeUnixNano](#starttimeunixnano)
@@ -37,9 +37,15 @@
 
 The OpenTelemetry data model for tracing consists of a protocol
 specification for encoding spans, which represent an individual unit
-of work done in a distributed system.
+of work done in a distributed system.  The purpose of this document is
+to define the fields of the protocol that are referenced by the SDK
+specification.
 
 ## Glossary
+
+The terminology used here has been influenced by language used by the
+[OpenTracing](http://opentracing.io) project and the [W3C trace
+context group](https://www.w3.org/TR/trace-context/).
 
 ### Trace
 
@@ -67,13 +73,13 @@ boundaries.
 
 ### Span context
 
-Span context is the portion of the OpenTelemetry Context that makes up
-the tracing data model.  This is specified by reference to the [W3C
-trace context](https://www.w3.org/TR/trace-context/) specification,
-which defines four parts of the span context:
+Span context refers to the fields of the Context that are mutated  that makes up the
+tracing data model.  This is specified by reference to the [W3C trace
+context](https://www.w3.org/TR/trace-context/) specification, which
+defines four parts of the span context:
 
-1. TraceID
-2. SpanID
+1. TraceId
+2. SpanId
 3. Trace flags
 4. Tracestate
 
@@ -94,19 +100,19 @@ which enables extending the context with vendor-specific information.
 
 ## Span fields
 
-### TraceID
+### TraceId
 
 **Status**: [Stable](../document-status.md)
 
-The OpenTelemetry TraceID is defined to be equivalent to the W3C trace
+The OpenTelemetry TraceId is defined to be equivalent to the W3C trace
 context `trace-id` field, consisting of 128-bits of information and
 assigned to the new trace when starting a root span.
 
-### SpanID
+### SpanId
 
 **Status**: [Stable](../document-status.md)
 
-The OpenTelemetry SpanID is defined to identify the span that is the
+The OpenTelemetry SpanId is defined to identify the span that is the
 parent of a new trace context, equivalent to the W3C trace context
 `parent-id` identifier in the context of a new span, consisting of
 64-bits of informaiton.
@@ -118,13 +124,13 @@ parent of a new trace context, equivalent to the W3C trace context
 The OpenTelemetry Span encodes the `tracestate` that was computed when
 the Span started.
 
-### ParentSpanID
+### ParentSpanId
 
 **Status**: [Stable](../document-status.md)
 
-The OpenTelemetry Span contains a ParentSpanID field which for
+The OpenTelemetry Span contains a ParentSpanId field which for
 non-root spans refers to the W3C `parent-id` identifiers that was in
-the trace context when it started (i.e., it is the SpanID of the
+the trace context when it started (i.e., it is the SpanId of the
 parent span for non-root spans).
 
 ### Name
