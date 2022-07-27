@@ -164,6 +164,7 @@ The `Meter` MUST provide functions to create new [Instruments](#instrument):
 * [Create a new Asynchronous Counter](#asynchronous-counter-creation)
 * [Create a new Histogram](#histogram-creation)
 * [Create a new Asynchronous Gauge](#asynchronous-gauge-creation)
+* [Create a new Gauge](#gauge-creation)
 * [Create a new UpDownCounter](#updowncounter-creation)
 * [Create a new Asynchronous UpDownCounter](#asynchronous-updowncounter-creation)
 
@@ -700,6 +701,10 @@ meter.CreateObservableGauge<double>("temperature", () => sensor.GetTemperature()
 Asynchronous Gauge is only intended for an asynchronous scenario. The only
 operation is provided by the `callback`, which is registered during the
 [Asynchronous Gauge creation](#asynchronous-gauge-creation).
+
+### Gauge
+
+Gauge is a [synchronous Instrument](#synchronous-instrument).  
 
 ### UpDownCounter
 
