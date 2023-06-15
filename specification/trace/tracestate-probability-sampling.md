@@ -97,32 +97,96 @@ objectives are:
 - Spans can be accurately counted using a Span-to-metrics pipeline
 - Traces tend to be complete, even though spans may make independent sampling decisions.
 
-This document specifies an approach based on an "r-value" and a
-"p-value".  At a very high level, r-value is a source of randomness
-and p-value encodes the sampling probability.  A context is sampled
-when `p <= r`.
+This document specifies an approach based on an "r-value", "s-value"
+and "t-value" properties encoded in the W3C tracestate.  At a very
+high level, r-value is an optional source of randomness and s-value
+and/or t-value encodes the probability that each item was included in
+the sample.  T-value supports "consistent" sampling, which facilitates
+coordination among samplers, while S-value supports independent sampling,
+an important existing use-case in OpenTelemetry we wish to support. 
 
-Significantly, by including the r-value and p-value in the
-OpenTelemetry `tracestate`, these two values automatically propagate
-through the context and are recorded on every Span.  This allows Trace
-consumers to correctly count spans simply by interpreting the p-value
-on a given span.
+Significantly, by including these values (r-, s- and t-) in the
+OpenTelemetry `tracestate`, they automatically propagate through the
+context and are recorded on every Span.  This allows Trace consumers
+to correctly count spans simply by interpreting the s-value and/or
+t-value on a given span.
 
-For efficiency, the supported sampling probabilities are limited to
-powers of two.  P-value is derived from sampling probability, which
-equals `2**-p`, thus p-value is encoded using an unsigned integer.
+Sampling probabilties that can be expressed using the s- and t- values
+are limited based on the number of available bits of randomness.  The
+set of supported sampling probabilities is encoded by fractions with
+denominator `2^56` (i.e., 2 to the power 56, i.e., 0x100000000000000,
+i.e., 72057594037927936).  Both s-value and t-value are represented by
+56-bits of information, expressing `2^56` distinct fractional values.
+When combined, the effects of consistent and independent sampling
+multiply, therefore the smallest representable effective sampling
+probability is `2^-112`.
 
-For example, a p-value of 3 indicates a sampling probability of 1/8.
+This specification permits the use of human-readable numbers that
+correspond with how we think about sampling.  These values can encode
+a floating-point fraction in the range `[2^-56, 1]` or an integer
+adjusted count (defined as the inverse of sampling probability) in the
+range `[1, 2^56]`.
 
-Since the W3C trace context does not specify that any of the 128 bits
-in a TraceID are true uniform-distributed random bits, the r-value is
-introduced as an additional source of randomness.
+For example, if a sampler is configured with a 1-in-**N** parameter,
+where where N is a whole number, then `10` is the preferred encoding
+for s-value or t-value.  If a sampler is configured with a NM% percent
+parameter, then the t-value may be encoded as `0.NM`.  Any
+IEEE-or-POSIX-specified floating point representation will do,
+generally we expect to use any well-specified number formatting
+available on the platform.
 
-The recommended method of generating an "r-value" is to count the
-number of leading 0s in a string of 62 random bits, however, it is not
-required to use this approach.
+For example, a t-value of 20 indicates a sampling probability of 1/20.
+The same probability can be encoded using "0.05", which is preffered
+when the user configures 5% sampling, whereas "20" is preferred if the
+user configured 1-in-20 sampling.
+
+The W3C traceparent v2 supports a `random` flag which indicates that
+56 true random bits are available for samplers to use.  When an
+implementation is able to support the v2 traceparent, this is the
+preferred, default mechanism of adding randomness to a TraceID.  The
+r-value field is used to encode 56-bits of randomness in such as cases
+as:
+
+- a v2 traceparent is not available
+- the v2 traceparent random bit is not set
+- correlated trace sampling, where independent traces will sample or
+  not-sample consistently because they have identical r-values.
+
+The "consistent" sampling property developed here is useful when
+mixing sampling probabilities in a trace, and when mixing various
+forms of sampling (e.g., head sampling and tail sampling).  T-value,
+by definition, is a consistent sampling process based on the built-in
+randomness (i.e., either the traceparent v2 or the r-value
+randomness).
+
+S-value is defined as the net-effective sampling probability resulting
+from all independent sampling processes having acted on the context or
+the span.  S-value samplers may be consistent or they may not be,
+however they should use independent randomness from the t-value.  We
+do not rigorously define "independence"; if a sampler applies a unique
+hash function to the TraceID to compute its sampling function, that
+may be considered an s-value sampler.
+
+When a collection pipeline consists of one or more samplers in
+sequence, s-value samplers and t-value samplers must update only their
+own value and preserve/propagate the other value.  For example, a head
+t-value sampler at the root of the trace samples 10% using traceparent
+v2 randomness and a collection agent samples another 50% by flipping a
+coin.  Spans that make it through both of these stages will have
+`t:0.1;s:0.5`; the net-effective sampling probability is 5% in this
+case, and the net adjusted count is 20.
 
 ### Definitions
+
+TODO: This is a Work-in-Progress
+
+In this document, we sometimes use a hexadecimal floating point
+representation, which permits exact representation of binary
+fractions.  For a double-width IEEE floating point number, this
+representation is is encoded as `0x1.xxxxp-dd`, characterized by a
+string of 1 to 13 hexadecimal numbers holding up to 52 bits of
+significand and a string of decimal digits holding the power-of-two
+exponent value.
 
 #### Sampling
 

@@ -319,8 +319,9 @@ the `ParentBased` sampler specified below.
   had a sampling ratio of 1 to every 10,000 spans it COULD return
   `"TraceIdRatioBased{0.000100}"` as its description.
 
-TODO: Add details about how the `TraceIdRatioBased` is implemented as a function
-of the `TraceID`. [#1413](https://github.com/open-telemetry/opentelemetry-specification/issues/1413)
+TODO: This is a Work-In-Progress
+
+TraceIDRatioBased is a t-value sampler, [as specified here](tracestate-probability-sampling.md).
 
 ##### Requirements for `TraceIdRatioBased` sampler algorithm
 
