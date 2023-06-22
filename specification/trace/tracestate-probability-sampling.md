@@ -178,15 +178,29 @@ case, and the net adjusted count is 20.
 
 ### Definitions
 
-TODO: This is a Work-in-Progress
+#### Hexadecimal floating point
 
 In this document, we sometimes use a hexadecimal floating point
 representation, which permits exact representation of binary
 fractions.  For a double-width IEEE floating point number, this
-representation is is encoded as `0x1.xxxxp-dd`, characterized by a
-string of 1 to 13 hexadecimal numbers holding up to 52 bits of
-significand and a string of decimal digits holding the power-of-two
-exponent value.
+representation is is encoded as `0x1.xxxxp-dd`, as specified in the
+ISO C99 standard and later in [IEEE 754-2008 - Standard for
+Floating-Point Arithmetic](https://ieeexplore.ieee.org/document/4610935).
+
+This representation has several advantages when used to convey t-value
+and s-value. 
+
+1. It supports efficient parsing
+2. It is an exact representation
+3. It represents existing p-values compactly (e.g., `t:0x1p-2`
+   corresponds with `p:2`).
+   
+Because of these properties, is is the recommended representation when
+used in multi-stage sampling arrangements, where the intention is to
+be efficient and precise, rather than to convey a human-readable
+sampling configuration.
+
+TODO: This is a Work-in-Progress
 
 #### Sampling
 
