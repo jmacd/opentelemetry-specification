@@ -27,6 +27,13 @@ requirements to the existing specifications.
       - [Asynchronous example: Delta temporality](#asynchronous-example-delta-temporality)
       - [Asynchronous example: attribute removal in a view](#asynchronous-example-attribute-removal-in-a-view)
   * [Memory management](#memory-management)
+- [Exponential Histogram bucket mapping with exact lookup tables](#exponential-histogram-bucket-mapping-with-exact-lookup-tables)
+  * [Bucket boundaries as significands](#bucket-boundaries-as-significands)
+  * [Building the boundary table](#building-the-boundary-table)
+  * [Mapping a value to a bucket index](#mapping-a-value-to-a-bucket-index)
+  * [The boundary at index zero and upper-inclusive correctness](#the-boundary-at-index-zero-and-upper-inclusive-correctness)
+  * [Supporting multiple scales](#supporting-multiple-scales)
+  * [Testing routines](#testing-routines)
 
 <!-- END DOCTOC -->
 
@@ -674,3 +681,300 @@ owner. For example, the application owners might want to spend more memory in
 order to keep more combinations of metrics attributes, or they might want to use
 memory aggressively for certain attributes that are important, and keep a
 conservative limit for attributes that are less important.
+
+## Exponential Histogram bucket mapping with exact lookup tables
+
+This section supplements the [ExponentialHistogram data
+model](./data-model.md#exponentialhistogram) and the producer-side mapping
+functions described under [Producer
+Expectations](./data-model.md#producer-expectations). It is non-normative: it
+adds no requirements beyond those already stated in the data model, and it is
+intended to help SDK and producer authors who want an integer-only mapping
+function for positive scales as an alternative to the [logarithm
+method](./data-model.md#all-scales-use-the-logarithm-function).
+
+The data model permits producers to use an inexact mapping function with an
+expected difference of at most one bucket from the correct result. The lookup
+table approach described here is _exact_: for every finite, positive,
+normal IEEE 754 double it returns the same index that an arbitrary-precision
+computation would, while using only integer operations at runtime. The
+technique was inspired by independently developed algorithms from
+[Dynatrace](https://github.com/dynatrace-oss/dynahist) and
+[NewRelic](https://github.com/newrelic-experimental/newrelic-sketch-java).
+
+The code fragments below are written in Python and assume CPython's native
+`int`, which is arbitrary precision. They operate on positive, normal
+doubles. Zero, subnormal values, and the special values `NaN` and `±Inf` are
+handled separately by the surrounding implementation, as described in the data
+model, and are omitted here for clarity.
+
+### Bucket boundaries as significands
+
+A positive, normal IEEE 754 double can be written as `significand * 2**exponent`
+where `significand` lies in the range `[1, 2)`. The lower 52 bits of the
+encoding hold the fractional part of the significand, and the 11 exponent bits
+hold `exponent` biased by 1023. The following helpers extract the two parts as
+integers:
+
+```python
+import struct
+
+SIGNIFICAND_WIDTH = 52
+SIGNIFICAND_MASK = (1 << SIGNIFICAND_WIDTH) - 1
+EXPONENT_BIAS = 1023
+
+def _raw_bits(value: float) -> int:
+    # Reinterpret the IEEE 754 double as a 64-bit unsigned integer.
+    return struct.unpack("<Q", struct.pack("<d", value))[0]
+
+def get_significand(value: float) -> int:
+    # The 52-bit fraction; the implicit leading 1 bit is not included.
+    return _raw_bits(value) & SIGNIFICAND_MASK
+
+def get_exponent(value: float) -> int:
+    # The unbiased base-2 exponent for the form 1.significand * 2**exponent.
+    return ((_raw_bits(value) >> SIGNIFICAND_WIDTH) & 0x7FF) - EXPONENT_BIAS
+```
+
+For scale `s` there are `N = 2**s` buckets between successive powers of two, an
+interval also known as an octave. Within a single octave every value shares the
+same `exponent`, so the bucket is determined entirely by the `significand`. The
+sub-bucket boundaries within the octave are located at `2**(k/N)` for
+`k = 0, 1, ..., N-1`, exactly the boundaries tabulated in [Exponential
+Buckets](./data-model.md#exponential-buckets).
+
+The key observation is that the 52-bit significand of `2**(k/N)` is a fixed
+value that does not depend on the octave. By precomputing those `N` significands
+once, the mapping reduces to: read the exponent and significand, count how many
+sub-bucket boundaries the significand has reached, and combine the two. No
+floating-point arithmetic is performed at mapping time.
+
+### Building the boundary table
+
+The boundary significand for sub-bucket `k` is the 52-bit fraction of
+`2**(k/N)`. Computing it exactly avoids the rounding error that makes the
+logarithm method inexact near boundaries. The mathematically exact value is the
+smallest integer `S` such that
+
+```
+S**N >= 2**(SIGNIFICAND_WIDTH * N + k)
+```
+
+because `(S / 2**SIGNIFICAND_WIDTH)**N >= 2**k` is equivalent to
+`S / 2**SIGNIFICAND_WIDTH >= 2**(k/N)`. The integer `S` includes the implicit
+leading bit, so the stored boundary is `S & SIGNIFICAND_MASK`. The smallest such
+`S` is found with an exact integer binary search, so the result is correct to
+the last bit regardless of any floating-point rounding:
+
+```python
+def _smallest_root(target: int, n: int) -> int:
+    # Smallest integer s such that s**n >= target, by integer bisection.
+    lo, hi = 1, 1 << (target.bit_length() // n + 1)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if mid ** n >= target:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+def build_boundary_table(scale: int, upper_inclusive: bool = True) -> list[int]:
+    n = 1 << scale
+    boundaries = []
+    for k in range(n):
+        target = 1 << (SIGNIFICAND_WIDTH * n + k)
+        boundaries.append(_smallest_root(target, n) & SIGNIFICAND_MASK)
+
+    # boundaries[0] is the significand of 2**(0/N) == 1.0, which is 0.
+    assert boundaries[0] == 0
+
+    # Upper-inclusive adjustment, explained in the next section.
+    if upper_inclusive:
+        boundaries[0] = 1
+
+    return boundaries
+```
+
+This computation runs once, at build time or program startup. A table generated
+at a high scale also serves every lower scale, as shown under [Supporting
+multiple scales](#supporting-multiple-scales), so an implementation typically
+builds a single table.
+
+### Mapping a value to a bucket index
+
+With the boundary table in hand, the runtime mapping is integer-only. The
+sub-bucket within the octave is the number of boundaries the significand has
+reached, found with a binary search, and the final index combines that with the
+exponent:
+
+```python
+import bisect
+
+def map_to_index(value: float, scale: int, boundaries: list[int]) -> int:
+    significand = get_significand(value)
+    exponent = get_exponent(value)
+
+    # Number of boundaries that are <= significand. Because boundaries are
+    # sorted, bisect_right gives the sub-bucket within the octave.
+    sub_bucket = bisect.bisect_right(boundaries, significand)
+
+    return (exponent << scale) + sub_bucket - 1
+```
+
+The `- 1` term reflects that bucket index `0` covers the range `(1, base]`, so
+the lower boundary `1` belongs to the bucket numbered one below, consistent with
+[Exponential Buckets](./data-model.md#exponential-buckets).
+
+### The boundary at index zero and upper-inclusive correctness
+
+ExponentialHistogram buckets are
+[upper-inclusive](./data-model.md#exponentialhistogram-bucket-inclusivity): the
+bucket identified by `index` represents values greater than `base**index` and
+less than or equal to `base**(index+1)`. The practical consequence is that an
+exact power of two, which sits on a boundary, must fall into the bucket _below_
+the one a naive `floor` of the logarithm would suggest.
+
+Within an octave the sub-bucket boundaries are `2**(k/N)`. For every `k` between
+`1` and `N-1` the exponent `k/N` is not an integer, so by the
+[Gelfond–Schneider theorem](https://en.wikipedia.org/wiki/Gelfond%E2%80%93Schneider_theorem)
+the value `2**(k/N)` is irrational. No IEEE 754 double can land exactly on an
+irrational boundary, so a value is always strictly above or strictly below it,
+and the comparison gives the correct bucket no matter which inclusivity
+convention is in force. The boundary table never needs a tie-break for these.
+
+The single exception is `k = 0`, whose boundary `2**(0/N) = 1.0` is rational and
+exactly representable. This is the only place where upper- versus lower-inclusive
+semantics can actually differ, and it is exactly the case of an exact power of
+two. The significand of `1.0` is `0`, so this is also the smallest significand
+that can occur within an octave.
+
+The entry at index `0` of the boundary table resolves this single case without a
+branch. The exact significand of `1.0` is `0`, but `build_boundary_table` stores
+`1` there instead. Counting boundaries with `bisect_right` then treats the value
+as follows:
+
+* For an exact power of two, `significand == 0`. Because `boundaries[0]` is `1`,
+  not `0`, no boundary is less than or equal to `0`, so `sub_bucket == 0` and the
+  index becomes `(exponent << scale) - 1` — one bucket below, exactly as
+  upper-inclusivity requires.
+* If `boundaries[0]` had been left at its true value of `0`, then `0` would
+  count as having reached the first boundary, `sub_bucket` would be `1`, and the
+  power of two would be placed one bucket too high.
+
+The following routine demonstrates the difference directly:
+
+```python
+def demonstrate_zero_entry(scale: int = 3) -> None:
+    correct = build_boundary_table(scale, upper_inclusive=True)
+    naive = build_boundary_table(scale, upper_inclusive=False)
+
+    value = 2.0  # exponent == 1, significand == 0
+    expected = (1 << scale) - 1  # upper-inclusive index for the power of two
+
+    assert map_to_index(value, scale, correct) == expected
+    assert map_to_index(value, scale, naive) == expected + 1  # off by one
+
+    print("upper-inclusive (boundaries[0] = 1):", map_to_index(value, scale, correct))
+    print("naive          (boundaries[0] = 0):", map_to_index(value, scale, naive))
+    print("expected:", expected)
+```
+
+For `scale = 3` the upper-inclusive table maps `2.0` to bucket `7`, while the
+naive table maps it to `8`. Setting `boundaries[0] = 1` is therefore the entire
+cost of implementing upper-inclusive semantics in the exact lookup path.
+
+The same correction is needed in the logarithm and exponent-extraction methods
+described in the data model, but there it appears as an explicit branch that
+checks for an exact power of two. In the lookup table, the check is folded into
+the single table entry at index `0`.
+
+### Supporting multiple scales
+
+The ExponentialHistogram design has the "perfect subsetting" property described
+under [Exponential Scale](./data-model.md#exponential-scale): bucket `k` at scale
+`s` is the union of buckets `2k` and `2k+1` at scale `s+1`. As a result, the
+index at scale `s` can be obtained from the index at any higher scale `H` by an
+arithmetic right shift, so a single table built at the highest supported scale
+serves every lower scale:
+
+```python
+def map_to_index_multiscale(value: float, scale: int, high_scale: int,
+                            high_boundaries: list[int]) -> int:
+    # high_boundaries was produced by build_boundary_table(high_scale).
+    fine_index = map_to_index(value, high_scale, high_boundaries)
+    return fine_index >> (high_scale - scale)
+```
+
+The arithmetic shift rounds toward negative infinity, which is the correct
+direction for the signed indexes used at the bottom of the histogram range.
+
+### Testing routines
+
+Because the lookup table is exact, it can be validated against independent
+references. The routines below cover the properties that matter most: exactness
+at powers of two, agreement with the logarithm method elsewhere, monotonicity,
+and perfect subsetting across scales.
+
+```python
+import math
+import random
+
+def logarithm_map(value: float, scale: int) -> int:
+    # The reference logarithm mapping from the data model, exact for
+    # powers of two. Used here only as an independent cross-check.
+    frac, exp = math.frexp(value)
+    if frac == 0.5:  # value is an exact power of two
+        return ((exp - 1) << scale) - 1
+    scale_factor = math.ldexp(1.0 / math.log(2), scale)
+    return math.floor(math.log(value) * scale_factor)
+
+def test_powers_of_two(scale: int) -> None:
+    # An exact power of two 2**e must map to (e << scale) - 1.
+    boundaries = build_boundary_table(scale)
+    for exponent in range(-1000, 1001):
+        value = math.ldexp(1.0, exponent)
+        assert map_to_index(value, scale, boundaries) == (exponent << scale) - 1
+
+def test_agrees_with_logarithm(scale: int, samples: int = 100_000) -> None:
+    # The exact result is never more than one bucket from the logarithm
+    # method, which itself may be off by one near boundaries.
+    boundaries = build_boundary_table(scale)
+    rng = random.Random(1)
+    for _ in range(samples):
+        value = math.ldexp(rng.random() + 1.0, rng.randint(-200, 200))
+        exact = map_to_index(value, scale, boundaries)
+        assert abs(exact - logarithm_map(value, scale)) <= 1
+
+def test_monotonic(scale: int, samples: int = 100_000) -> None:
+    # Larger values never map to smaller indexes.
+    boundaries = build_boundary_table(scale)
+    rng = random.Random(2)
+    values = sorted(math.ldexp(rng.random() + 1.0, rng.randint(-50, 50))
+                    for _ in range(samples))
+    previous = None
+    for value in values:
+        index = map_to_index(value, scale, boundaries)
+        if previous is not None:
+            assert index >= previous
+        previous = index
+
+def test_perfect_subsetting(high_scale: int, samples: int = 100_000) -> None:
+    # Right-shifting a higher-scale index yields the lower-scale index.
+    high = build_boundary_table(high_scale)
+    rng = random.Random(3)
+    for low_scale in range(1, high_scale):
+        low = build_boundary_table(low_scale)
+        for _ in range(samples):
+            value = math.ldexp(rng.random() + 1.0, rng.randint(-50, 50))
+            shifted = map_to_index(value, high_scale, high) >> (high_scale - low_scale)
+            assert shifted == map_to_index(value, low_scale, low)
+```
+
+Implementations are encouraged to verify the mapping near the lowest and highest
+representable doubles, where a bucket's range may be only partially representable
+in the floating-point format, as noted under [Producer
+Recommendations](./data-model.md#exponentialhistogram-producer-recommendations).
+An exhaustive check is also feasible for the most error-prone region: at the
+table's highest scale, iterating over every double in the first sub-bucket of an
+octave, where the boundaries are most closely spaced, validates the boundary
+comparison against an arbitrary-precision oracle.
