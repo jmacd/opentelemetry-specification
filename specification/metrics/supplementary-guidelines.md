@@ -762,28 +762,41 @@ S**N >= 2**(SIGNIFICAND_WIDTH * N + k)
 
 because `(S / 2**SIGNIFICAND_WIDTH)**N >= 2**k` is equivalent to
 `S / 2**SIGNIFICAND_WIDTH >= 2**(k/N)`. The integer `S` includes the implicit
-leading bit, so the stored boundary is `S & SIGNIFICAND_MASK`. The smallest such
-`S` is found with an exact integer binary search, so the result is correct to
-the last bit regardless of any floating-point rounding:
+leading bit, so the stored boundary is `S & SIGNIFICAND_MASK`.
+
+The recommended way to obtain `S` is the repeated-square-root method used by
+reference implementations, following
+[Collector PR #3841](https://github.com/open-telemetry/opentelemetry-collector/pull/3841).
+Applying `sqrt` `scale` times divides the exponent by `2**scale == N`, so
+`sqrt(sqrt(...sqrt(2**k)))` evaluates to `2**(k/N)`. Computing that at high
+precision gives a value within one unit of the answer, and a single exact
+integer check pins down `S` to the last bit. Python's `decimal` module provides
+arbitrary-precision square roots from the standard library:
 
 ```python
-def _smallest_root(target: int, n: int) -> int:
-    # Smallest integer s such that s**n >= target, by integer bisection.
-    lo, hi = 1, 1 << (target.bit_length() // n + 1)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if mid ** n >= target:
-            hi = mid
-        else:
-            lo = mid + 1
-    return lo
+from decimal import Decimal, getcontext
+
+def _boundary_significand(k: int, n: int, scale: int) -> int:
+    # High-precision approximation of 2**(k/N) by taking sqrt `scale` times.
+    getcontext().prec = 60  # decimal digits (~199 bits), ample for 52-bit output
+    x = Decimal(1 << k)     # 2**k, exact
+    for _ in range(scale):
+        x = x.sqrt()
+    candidate = int(x * (1 << SIGNIFICAND_WIDTH))  # floor to a 53-bit integer
+
+    # Exact integer correction: S is the smallest integer with
+    # S**N >= 2**(SIGNIFICAND_WIDTH*N + k). The approximation is at most
+    # one below, so a single increment suffices.
+    target = 1 << (SIGNIFICAND_WIDTH * n + k)
+    if candidate ** n < target:
+        candidate += 1
+    assert (candidate - 1) ** n < target  # confirm S is exact (within 1 ULP)
+    return candidate
 
 def build_boundary_table(scale: int, upper_inclusive: bool = True) -> list[int]:
     n = 1 << scale
-    boundaries = []
-    for k in range(n):
-        target = 1 << (SIGNIFICAND_WIDTH * n + k)
-        boundaries.append(_smallest_root(target, n) & SIGNIFICAND_MASK)
+    boundaries = [_boundary_significand(k, n, scale) & SIGNIFICAND_MASK
+                  for k in range(n)]
 
     # boundaries[0] is the significand of 2**(0/N) == 1.0, which is 0.
     assert boundaries[0] == 0
@@ -795,10 +808,35 @@ def build_boundary_table(scale: int, upper_inclusive: bool = True) -> list[int]:
     return boundaries
 ```
 
-This computation runs once, at build time or program startup. A table generated
-at a high scale also serves every lower scale, as shown under [Supporting
-multiple scales](#supporting-multiple-scales), so an implementation typically
-builds a single table.
+The high-precision step only needs to land within one unit of the true value;
+the integer check, performed with arbitrary-precision integers, is what
+guarantees exactness, so any rounding in the square-root chain is harmless.
+
+An implementation that prefers to avoid a high-precision floating-point library
+can replace `_boundary_significand` with a pure-integer binary search for the
+same `S`. This needs nothing beyond built-in integers, at the cost of a slower
+build because each step raises a large integer to the `N`-th power, which grows
+expensive as the scale increases:
+
+```python
+def _boundary_significand(k: int, n: int, scale: int) -> int:
+    # Smallest integer S such that S**N >= 2**(SIGNIFICAND_WIDTH*N + k).
+    target = 1 << (SIGNIFICAND_WIDTH * n + k)
+    lo, hi = 1, 1 << (target.bit_length() // n + 1)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if mid ** n >= target:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+```
+
+Both forms produce bit-identical boundary tables. This computation runs once, at
+build time or program startup. A table generated at a high scale also serves
+every lower scale, as shown under [Supporting multiple
+scales](#supporting-multiple-scales), so an implementation typically builds a
+single table.
 
 ### Mapping a value to a bucket index
 
